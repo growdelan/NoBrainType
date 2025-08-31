@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>No Brain Type</title>
+<style>
+  :root{
+    --bg:#0f141a; --fg:#e5e7eb; --muted:#7a838d; --bad:#ef4444; --accent:#facc15;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.6 ui-sans-serif,system-ui,Segoe UI,Inter,Roboto,Arial;
+    -webkit-font-smoothing:antialiased;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .wrap{width:min(920px,92vw);}
+  .brand{opacity:.7; font-weight:700; letter-spacing:.2px; margin-bottom:18px; user-select:none}
+  .brand span{opacity:.55}
+  .hud{display:flex; justify-content:space-between; align-items:center; margin:6px 0 20px; font-size:14px; color:var(--muted)}
+  .time{color:var(--accent); font-weight:700; font-size:18px}
+
+  .card{
+    background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.05);
+    border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25);
+  }
+  textarea{
+    width:100%; min-height:180px; resize:vertical; background:#0b0f14; color:var(--fg);
+    border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:14px; outline:none;
+  }
+  .row{display:flex; gap:10px; margin-top:12px; flex-wrap:wrap}
+  button{
+    background:#1b2330; color:var(--fg); border:1px solid rgba(255,255,255,.1);
+    padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600;
+  }
+  button:hover{filter:brightness(1.1)}
+  .linkish{cursor:pointer; color:#9ecbff; text-decoration:none; border:0; background:none; padding:0}
+
+  #test{display:none;}
+  #text{
+    font-size:28px; line-height:1.55; letter-spacing:.2px;
+    white-space:pre-wrap; user-select:none; word-break:break-word;
+
+    /* okno podglądu = ~5 linijek */
+    height: calc(1em * 1.55 * 5);
+    overflow-y: auto;                 /* przewijamy wewnątrz (scroll ukryty) */
+    scrollbar-width: none;
+  }
+  #text::-webkit-scrollbar{display:none}
+
+  .char{color:var(--muted); transition:color .08s}
+  .char.correct{color:var(--fg)}
+  .char.wrong{color:var(--bad)}
+  .char.current{border-bottom:2px solid rgba(255,255,255,.35)}
+
+  #result{display:none; text-align:center; margin-top:20px}
+  .wpm{font-size:64px; font-weight:900; color:var(--accent)}
+  .sub{color:var(--muted); margin-top:6px}
+  .actions{display:flex; gap:10px; justify-content:center; margin-top:10px}
+  .hiddenInput{position:fixed; opacity:0; pointer-events:none; height:0; width:0}
+</style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="brand">nobrain<span>type</span> – ultra-prosta nauka pisania</div>
+
+    <!-- EKRAN 1: wklejanie -->
+    <div id="setup" class="card">
+      <div style="margin-bottom:8px; color:var(--muted)">Wklej tu swój tekst (polskie znaki i interpunkcja zostaną usunięte automatycznie):</div>
+      <textarea id="src" placeholder="Wklej tekst..."></textarea>
+      <div class="row">
+        <button id="toTest">Przygotuj test</button>
+        <button class="linkish" id="fillSample">Wstaw przykładowy tekst</button>
+      </div>
+    </div>
+
+    <!-- EKRAN 2: test -->
+    <div id="test">
+      <div class="hud">
+        <div>30-sekundowy test. Licznik startuje po pierwszym naciśnięciu klawisza.</div>
+        <div class="time"><span id="clock">30.0</span>s</div>
+      </div>
+      <div id="text" class="card"></div>
+      <div id="result">
+        <div class="wpm" id="wpm">0</div>
+        <div class="sub" id="stats"></div>
+        <div class="actions">
+          <button id="again">Jeszcze raz</button>
+          <button id="back" class="linkish">Edytuj tekst</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ukryte pole, żeby klawiatura mobilna działała -->
+    <input id="hiddenInput" class="hiddenInput" autocomplete="off" />
+
+    <!-- v2: szybka akcja podczas testu (Tab -> Enter) -->
+    <div id="quickActions" class="actions" style="display:none">
+      <button id="restartNow">Ponów test</button>
+    </div>
+
+  </div>
+
+<script>
+(() => {
+  // --- Normalizacja: bezpieczne zdejmowanie interpunkcji i ogonków ---
+  const normalizeText = (raw) => {
+    if (!raw) return "";
+    let s = raw.replace(/\r\n|\n|\u00A0/g, " ");              // nowe linie i NBSP -> spacja
+    s = s.replace(/[^\p{L}\p{N}\s]/gu, "");                   // tylko litery/cyfry/spacje
+    s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");   // zdejmij diakrytyki
+    s = s.replace(/[łŁ]/g, m => (m === "Ł" ? "L" : "l"));     // ręcznie dla ł/Ł
+    s = s.toLowerCase().replace(/\s+/g, " ").trim();          // małe litery + jedno-spacje
+    return s;
+  };
+
+  // --- DOM ---
+  const setup = document.getElementById('setup');
+  const test = document.getElementById('test');
+  const src = document.getElementById('src');
+  const toTest = document.getElementById('toTest');
+  const fillSample = document.getElementById('fillSample');
+  const text = document.getElementById('text');
+  const clock = document.getElementById('clock');
+  const result = document.getElementById('result');
+  const wpmEl = document.getElementById('wpm');
+  const statsEl = document.getElementById('stats');
+  const again = document.getElementById('again');
+  const back = document.getElementById('back');
+  const hiddenInput = document.getElementById('hiddenInput');
+
+  // v2 elements
+  const quickActions = document.getElementById('quickActions');
+  const restartNow = document.getElementById('restartNow');
+
+  const sample = "Jak formularz spokojnie mu nazwa sam świat powrotem zobaczyć światła pierwszy tutaj miał szukać teraz koniec im ludzie mężczyźni mu bardzo prawo słowo znowu wyszedł kiedy drogi daleko był inny niebo rano jeśli trzeba mogli przyjść jak często ktoś myślał że pójdzie dalej bez strachu i ciszy.";
+
+  // --- Stan testu ---
+  let normalized = "", spans = [];
+  let i = 0, started = false, finished = false;
+  let correct = 0, wrong = 0;
+  let t0 = 0, timer = null, duration = 30_000;
+
+  function buildTest(textStr){
+    normalized = normalizeText(textStr);
+    if(!normalized){
+      alert("Po normalizacji tekst jest pusty. Wklej coś innego 🙂");
+      return;
+    }
+    // zbuduj znaki
+    text.innerHTML = "";
+    spans = [];
+    for(const ch of normalized){
+      const s = document.createElement('span');
+      s.textContent = ch === " " ? " " : ch;
+      s.className = "char";
+      spans.push(s);
+      text.appendChild(s);
+    }
+    // start stanu
+    i = 0; correct = 0; wrong = 0; started = false; finished = false;
+    if (spans.length) spans[0].classList.add('current');
+    text.scrollTop = 0;                 // pokaż początek
+    ensureVisible();                    // wycentruj kursor w oknie
+    clock.textContent = (duration/1000).toFixed(1);
+    result.style.display = "none";
+    setup.style.display = "none";
+    test.style.display = "block";
+    // v2: pokaż szybkie akcje podczas testu
+    quickActions.style.display = "flex";
+    focusTyper();
+  }
+
+  function focusTyper(){
+    hiddenInput.value = "";
+    hiddenInput.focus({preventScroll:true});
+  }
+
+  function startTimer(){
+    t0 = performance.now();
+    started = true;
+    timer = setInterval(() => {
+      const left = Math.max(0, duration - (performance.now()-t0));
+      clock.textContent = (left/1000).toFixed(1);
+      if (left <= 0) finish();
+    }, 100);
+  }
+
+  function finish(){
+    if (finished) return;
+    finished = true;
+    clearInterval(timer);
+    const elapsed = Math.max(1, performance.now() - t0); // ms
+    const wpm = (correct/5) * (60000/elapsed);
+    wpmEl.textContent = Math.round(wpm);
+    statsEl.textContent = `Poprawnych znaków: ${correct} • Błędnych: ${wrong} • Czas: ${(elapsed/1000).toFixed(1)} s`;
+    result.style.display = "block";
+    // v2: ukryj szybkie akcje po zakończeniu testu
+    quickActions.style.display = "none";
+  }
+
+  // ––– Auto-scroll: trzymaj bieżący znak w oknie 5 linijek –––
+  function ensureVisible(){
+    if (i >= spans.length) return;
+    const s = spans[i];
+    const lh = parseFloat(getComputedStyle(text).lineHeight || "0"); // px
+    const y = s.offsetTop - text.offsetTop; // pozycja znaku wewnątrz #text
+    const target = Math.max(0, y - lh*2);   // ~2 linie zapasu nad kursorem
+    const max = text.scrollHeight - text.clientHeight;
+    text.scrollTop = Math.min(max, target);
+  }
+
+  // --- Obsługa klawiatury (tylko w trybie testu) ---
+  function handleKey(e){
+    if (!testIsVisible()) return;
+    if (finished) { e.preventDefault(); return; }
+
+    const key = e.key;
+
+    // Backspace (z obsługą Option+Backspace = usuń całe słowo)
+    if (key === "Backspace"){
+      e.preventDefault();
+      if (i>0){
+        spans[i].classList.remove('current');
+
+        if (e.altKey) {
+          // usuń najpierw ewentualne spacje po lewej stronie kursora
+          while (i>0 && spans[i-1].textContent === ' ') {
+            i--;
+            const sPrev = spans[i];
+            if (sPrev.classList.contains('correct')) correct--;
+            if (sPrev.classList.contains('wrong')) wrong--;
+            sPrev.className = 'char';
+          }
+          // usuń całe słowo do poprzedniej spacji lub początku
+          while (i>0 && spans[i-1].textContent !== ' ') {
+            i--;
+            const sPrev = spans[i];
+            if (sPrev.classList.contains('correct')) correct--;
+            if (sPrev.classList.contains('wrong')) wrong--;
+            sPrev.className = 'char';
+          }
+        } else {
+          // standardowy Backspace: usuń jeden znak
+          i--;
+          const prev = spans[i];
+          if (prev.classList.contains('correct')) correct--;
+          if (prev.classList.contains('wrong')) wrong--;
+        }
+
+        if (i < spans.length) {
+          spans[i].className = "char current";
+        }
+        ensureVisible();
+      }
+      return;
+    }
+
+    // ignoruj klawisze sterujące
+    if (key.length !== 1) return;
+
+    if (!started) startTimer();
+
+    const typed = key.normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+                     .replace(/[łŁ]/g, m => (m==="Ł"?"L":"l"))
+                     .toLowerCase();
+
+    const expected = normalized[i];
+    if (i >= spans.length) return;
+
+    const s = spans[i];
+    s.classList.remove('current');
+    if (typed === expected){ s.classList.add('correct'); correct++; }
+    else { s.classList.add('wrong'); wrong++; }
+    i++;
+
+    if (i < spans.length) {
+      spans[i].classList.add('current');
+      ensureVisible();               // przewiń dalej razem z pisaniem
+    } else {
+      finish();
+    }
+  }
+
+  const testIsVisible = () => test.style.display === "block";
+
+  // --- Zdarzenia UI ---
+  toTest.addEventListener('click', () => buildTest(src.value || sample));
+  fillSample.addEventListener('click', () => { src.value = sample; src.focus(); src.setSelectionRange(src.value.length, src.value.length); });
+
+  again.addEventListener('click', () => buildTest(normalized));
+  back.addEventListener('click', () => { clearInterval(timer); test.style.display="none"; setup.style.display="block"; result.style.display="none"; quickActions.style.display = "none"; });
+
+  // v2: ponów test w trakcie
+  restartNow.addEventListener('click', () => buildTest(normalized || src.value || sample));
+
+  // Globalny nasłuch tylko podczas testu
+  document.addEventListener('keydown', (e)=>{
+    if (!testIsVisible()) return;
+    // v2: jeśli fokus jest na przycisku restartu, pozwól Enter zadziałać naturalnie
+    if (document.activeElement === restartNow) return;
+    focusTyper();
+    handleKey(e);
+  });
+  // v2: nie przechwytuj fokusu, gdy użytkownik przechodzi Tabem do przycisku restartu
+  hiddenInput.addEventListener('blur', ()=>{
+    setTimeout(()=>{
+      if (testIsVisible() && !finished && document.activeElement !== restartNow) {
+        focusTyper();
+      }
+    }, 0);
+  });
+
+  // blokuj wklejanie w trakcie testu
+  document.addEventListener('paste', (e)=>{ if (testIsVisible() && !finished) e.preventDefault(); });
+
+  // Enter w polu tekstowym = szybkie przygotowanie testu
+  src.addEventListener('keydown', (e)=>{ if(e.key==="Enter" && (e.metaKey||e.ctrlKey||e.shiftKey)){ e.preventDefault(); buildTest(src.value || sample); }});
+})();
+</script>
+</body>
+</html>
+
